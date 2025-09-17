@@ -1,0 +1,143 @@
+//////////////////////////////////////////////////////////////
+// Asset List
+//////////////////////////////////////////////////////////////
+var gsw = ee.Image('JRC/GSW1_0/GlobalSurfaceWater');
+
+//var gsw = ee.Image('JRC/GSW1_3/GlobalSurfaceWater');
+var occurrence = gsw.select('occurrence');
+var change = gsw.select("change_abs");
+var transition = gsw.select('transition');
+var roi = ee.FeatureCollection('projects/ee-megredgar/assets/BHBshapefile');
+
+//////////////////////////////////////////////////////////////
+// Visualization Parameters
+//////////////////////////////////////////////////////////////
+
+var VIS_OCCURRENCE = {
+    min: 0,
+    max: 100,
+    palette: ['red', 'blue']
+};
+var VIS_CHANGE = {
+    min: -50,
+    max: 50,
+    palette: ['red', 'black', 'limegreen']
+};
+var VIS_WATER_MASK = {
+  palette: ['white', 'black']
+};
+
+//////////////////////////////////////////////////////////////
+// Helper Functions
+//////////////////////////////////////////////////////////////
+
+// Convert number to string for dictionary keys
+function numToString(num) {
+  return ee.Number(num).format();
+}
+
+// Create features for transition class statistics
+function createFeature(stats) {
+  var statsDict = ee.Dictionary(stats);
+  var classNumber = statsDict.get('transition_class_value');
+  return ee.Feature(null, {
+    transition_class_number: classNumber,
+    transition_class_name: lookup_names.get(classNumber),
+    transition_class_palette: lookup_palette.get(classNumber),
+    area_m2: statsDict.get('sum')
+  });
+}
+
+//////////////////////////////////////////////////////////////
+// Calculations
+//////////////////////////////////////////////////////////////
+
+// Lookup dictionaries for names and colors of transition classes
+var lookup_names = ee.Dictionary.fromLists(
+    ee.List(gsw.get('transition_class_values')).map(numToString),
+    gsw.get('transition_class_names')
+);
+var lookup_palette = ee.Dictionary.fromLists(
+    ee.List(gsw.get('transition_class_values')).map(numToString),
+    gsw.get('transition_class_palette')
+);
+
+// Create a water mask and histogram focused on the ROI
+var water_mask = occurrence.gt(90).mask(1);
+var histogram = ui.Chart.image.histogram(change, roi, 30);
+histogram.setOptions({
+  title: 'Histogram of surface water change intensity in the BHB'
+});
+print(histogram);
+
+// Calculate transition class areas within the ROI
+var areaImage = ee.Image.pixelArea().addBands(transition);
+var transitionStats = areaImage.reduceRegion({
+  reducer: ee.Reducer.sum().group(1, 'transition_class_value'),
+  geometry: roi,
+  scale: 30,
+  bestEffort: true
+});
+var transition_fc = ee.FeatureCollection(ee.List(transitionStats.get('groups')).map(createFeature));
+
+// Summary chart for transition class areas within the ROI
+var transition_summary_chart = ui.Chart.feature.byFeature({
+  features: transition_fc,
+  xProperty: 'transition_class_name',
+  yProperties: ['area_m2', 'transition_class_number']
+}).setChartType('PieChart').setOptions({
+  title: 'Transition Class Area Summary in the BHB',
+  sliceVisibilityThreshold: 0
+});
+print(transition_summary_chart);
+
+//////////////////////////////////////////////////////////////
+// Initialize Map Location
+//////////////////////////////////////////////////////////////
+Map.centerObject(roi, 11)
+
+//////////////////////////////////////////////////////////////
+// Map Layers
+//////////////////////////////////////////////////////////////
+
+Map.addLayer(water_mask, VIS_WATER_MASK, '90% Occurrence Water Mask', false);
+Map.addLayer(occurrence.updateMask(occurrence.divide(100)), VIS_OCCURRENCE, "Water Occurrence (1984-2015)", false);
+Map.addLayer(change, VIS_CHANGE, 'Change Intensity', false);
+Map.addLayer(transition, {}, 'Transition Classes (1984-2015)');
+
+//////////////////////////////////////////////////////////////
+// Export Layers to Google Drive
+//////////////////////////////////////////////////////////////
+
+// Function to export image layers
+function exportImageLayer(image, description, folder, roi, scale, fileNamePrefix) {
+  Export.image.toDrive({
+    image: image,
+    description: description,
+    folder: folder,
+    scale: scale,
+    region: roi.geometry(),
+    fileFormat: 'GeoTIFF',
+    fileNamePrefix: fileNamePrefix
+  });
+}
+
+// Set export parameters
+var exportScale = 30; // Adjust scale based on your needs (meters)
+var exportFolder = 'GEE_Export'; // Folder in Drive to save the files
+
+// Export the water mask
+exportImageLayer(water_mask, 'WaterMask_90', exportFolder, roi, exportScale, 'water_mask_90');
+
+// Export the occurrence layer
+exportImageLayer(occurrence.updateMask(occurrence.divide(100)), 'WaterOccurrence_1984_2015', exportFolder, roi, exportScale, 'water_occurrence');
+
+// Export the change intensity layer
+exportImageLayer(change, 'ChangeIntensity_1984_2015', exportFolder, roi, exportScale, 'change_intensity');
+
+// Export the transition classes layer
+exportImageLayer(transition, 'TransitionClasses_1984_2015', exportFolder, roi, exportScale, 'transition_classes');
+
+// Reminder to check the Tasks panel
+print('Check the "Tasks" tab in Earth Engine Code Editor to run and monitor the exports.');
+
